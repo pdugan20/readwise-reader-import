@@ -1,6 +1,8 @@
 """Unit tests for readwise_reader_import.importer."""
 
 import json
+import shutil
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -154,6 +156,109 @@ def test_push_dry_run(capsys):
     assert "[DRY-RUN]" in capsys.readouterr().out
 
 
+# --- _update ---
+
+
+def test_update_selects_only_updatable_fields(monkeypatch):
+    captured = {}
+
+    def fake_request(url, payload, token, method):
+        captured.update(url=url, payload=payload, method=method)
+        return object()
+
+    monkeypatch.setattr(importer, "_request", fake_request)
+    monkeypatch.setattr(importer, "_send", lambda req: (200, "{}"))
+    meta = {
+        "title": "T",
+        "summary": "S",
+        "tags": ["a"],
+        "url": "https://e.com",
+        "html": "<p>x</p>",
+    }
+    importer._update("token", "doc123", meta)
+    assert captured["method"] == "PATCH"
+    assert captured["url"].endswith("/doc123/")
+    assert captured["payload"] == {"title": "T", "summary": "S", "tags": ["a"]}
+
+
+# --- _send (rate-limit retry) ---
+
+
+class _FakeResponse:
+    status = 200
+
+    def __init__(self, body):
+        self._body = body
+
+    def read(self):
+        return self._body.encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_send_retries_on_429(monkeypatch):
+    calls = []
+
+    def fake_urlopen(req):
+        calls.append(req)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(
+                "https://e.com",
+                429,
+                "Too Many Requests",
+                {"Retry-After": "0"},
+                None,
+            )
+        return _FakeResponse('{"ok": true}')
+
+    monkeypatch.setattr(importer.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(importer.time, "sleep", lambda _: None)
+    status, body = importer._send(object())
+    assert status == 200
+    assert len(calls) == 2
+
+
+# --- default_output ---
+
+
+def test_default_output_file(tmp_path):
+    path = tmp_path / "article.md"
+    path.write_text("# x")
+    assert importer.default_output(path, "epub") == Path("article.epub")
+
+
+def test_default_output_directory(tmp_path):
+    job = tmp_path / "my-job"
+    job.mkdir()
+    assert importer.default_output(job, "pdf") == Path("my-job.pdf")
+
+
+# --- export_file ---
+
+
+def test_export_file_dry_run(tmp_path, capsys):
+    (tmp_path / "a.md").write_text("# A\n\ntext")
+    docs = importer.collect_documents(tmp_path, {})
+    result = importer.export_file(docs, tmp_path / "out.epub", "epub", dry_run=True)
+    assert result is True
+    assert "[DRY-RUN]" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc not installed")
+def test_export_file_epub(tmp_path):
+    (tmp_path / "a.md").write_text("# Chapter A\n\nText A.")
+    (tmp_path / "b.md").write_text("# Chapter B\n\nText B.")
+    docs = importer.collect_documents(tmp_path, {})
+    output = tmp_path / "out.epub"
+    importer.export_file(docs, output, "epub", dry_run=False)
+    assert output.exists()
+    assert output.read_bytes()[:2] == b"PK"
+
+
 # --- build_parser ---
 
 
@@ -161,6 +266,15 @@ def test_build_parser_basic():
     args = importer.build_parser().parse_args(["jobs/x", "--dry-run"])
     assert args.target == "jobs/x"
     assert args.dry_run is True
+    assert args.export == "reader"
+
+
+def test_build_parser_export_option():
+    args = importer.build_parser().parse_args(
+        ["jobs/x", "--export", "epub", "--output", "book.epub"]
+    )
+    assert args.export == "epub"
+    assert args.output == "book.epub"
 
 
 def test_build_parser_version_flag():

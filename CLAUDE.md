@@ -29,5 +29,7 @@ articles. The command is `reader-import`.
 
 ## Reader API notes
 
-- The save endpoint de-duplicates on `url`; re-posting an existing URL does
-  not update `summary` or `image_url` — those must be set at creation time.
+- The save endpoint de-duplicates on `url`. When the URL already exists, the
+  importer follows up with the update endpoint (`PATCH /update/<id>/`) to
+  refresh metadata. Article HTML content itself is not re-updated.
+- API calls retry on HTTP 429 using the `Retry-After` header.
