@@ -49,8 +49,11 @@ path = "readwise_reader_import/__init__.py"
 packages = ["readwise_reader_import"]
 
 [tool.pytest.ini_options]
-addopts = "--cov=readwise_reader_import --cov-report=term-missing"
+addopts = "--cov=readwise_reader_import --cov-report=term-missing --cov-fail-under=85"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+omit = ["readwise_reader_import/__main__.py"]
 
 [tool.ruff]
 target-version = "py311"

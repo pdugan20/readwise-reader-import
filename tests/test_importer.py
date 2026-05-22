@@ -1,7 +1,9 @@
 """Unit tests for readwise_reader_import.importer."""
 
+import io
 import json
 import shutil
+import sys
 import urllib.error
 from pathlib import Path
 
@@ -280,3 +282,108 @@ def test_build_parser_export_option():
 def test_build_parser_version_flag():
     with pytest.raises(SystemExit):
         importer.build_parser().parse_args(["--version"])
+
+
+# --- parse_frontmatter edge cases ---
+
+
+def test_parse_frontmatter_unclosed():
+    text = "---\ntitle: X\nno closing fence"
+    meta, body = importer.parse_frontmatter(text)
+    assert meta == {}
+    assert body == text
+
+
+def test_parse_frontmatter_skips_blank_and_comment():
+    meta, _ = importer.parse_frontmatter("---\n# a comment\n\ntitle: Real\n---\nbody")
+    assert meta == {"title": "Real"}
+
+
+# --- _request ---
+
+
+def test_request_builds_post():
+    req = importer._request("https://e.com/x", {"a": 1}, "tok", "POST")
+    assert req.method == "POST"
+    assert req.full_url == "https://e.com/x"
+    assert req.get_header("Authorization") == "Token tok"
+    assert json.loads(req.data) == {"a": 1}
+
+
+# --- push (live paths, mocked transport) ---
+
+
+def test_push_creates(monkeypatch, capsys):
+    monkeypatch.setattr(importer, "_send", lambda req: (201, '{"id": "x", "url": "u"}'))
+    meta = {"url": "https://e.com", "title": "New Doc"}
+    assert importer.push("tok", meta, "<p>h</p>", dry_run=False) is True
+    assert "created" in capsys.readouterr().out
+
+
+def test_push_updates_existing(monkeypatch, capsys):
+    monkeypatch.setattr(
+        importer, "_send", lambda req: (200, '{"id": "abc", "url": "u"}')
+    )
+    meta = {"url": "https://e.com", "title": "Old Doc", "summary": "s"}
+    assert importer.push("tok", meta, "<p>h</p>", dry_run=False) is True
+    assert "updated" in capsys.readouterr().out
+
+
+def test_push_handles_http_error(monkeypatch, capsys):
+    def boom(req):
+        raise urllib.error.HTTPError(
+            "https://e.com", 400, "Bad Request", {}, io.BytesIO(b"nope")
+        )
+
+    monkeypatch.setattr(importer, "_send", boom)
+    meta = {"url": "https://e.com", "title": "Doc"}
+    assert importer.push("tok", meta, "<p>h</p>", dry_run=False) is False
+    assert "[ERROR]" in capsys.readouterr().out
+
+
+# --- export_reader ---
+
+
+def test_export_reader(tmp_path, monkeypatch):
+    (tmp_path / "a.md").write_text("# A\n\ntext")
+    monkeypatch.setattr(importer, "push", lambda *a, **k: True)
+    docs = importer.collect_documents(tmp_path, {})
+    assert importer.export_reader(docs, "tok", dry_run=False, save_html=False)
+
+
+# --- export_file error handling ---
+
+
+def test_export_file_requires_pandoc(tmp_path, monkeypatch):
+    (tmp_path / "a.md").write_text("# A\n\ntext")
+    monkeypatch.setattr(importer.shutil, "which", lambda _: None)
+    docs = importer.collect_documents(tmp_path, {})
+    with pytest.raises(SystemExit):
+        importer.export_file(docs, tmp_path / "o.epub", "epub", dry_run=False)
+
+
+# --- main ---
+
+
+def test_main_target_not_found(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["reader-import", "no/such/path"])
+    with pytest.raises(SystemExit):
+        importer.main()
+
+
+def test_main_reader_dry_run(tmp_path, monkeypatch, capsys):
+    (tmp_path / "a.md").write_text("# A\n\ntext")
+    monkeypatch.setattr(sys, "argv", ["reader-import", str(tmp_path), "--dry-run"])
+    importer.main()
+    assert "converted: 1/1" in capsys.readouterr().out
+
+
+def test_main_epub_dry_run(tmp_path, monkeypatch, capsys):
+    (tmp_path / "a.md").write_text("# A\n\ntext")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["reader-import", str(tmp_path), "--export", "epub", "--dry-run"],
+    )
+    importer.main()
+    assert "[DRY-RUN]" in capsys.readouterr().out
