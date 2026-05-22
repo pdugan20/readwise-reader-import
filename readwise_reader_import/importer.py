@@ -1,13 +1,19 @@
-"""Import markdown documents into Readwise Reader as clean, highlightable
-articles.
+"""Import markdown documents into Readwise Reader, or export them as files.
 
 Usage:
-  reader-import JOB_DIR          push every document a manifest.json lists
-  reader-import FILE.md [opts]   push a single markdown file
-  reader-import DIR     [opts]   push every *.md in a directory
+  reader-import JOB_DIR            push every document a manifest.json lists
+  reader-import FILE.md [opts]     push a single markdown file
+  reader-import DIR     [opts]     push every *.md in a directory
+
+Export targets (--export):
+  reader   push to Readwise Reader via the API (default)
+  epub     combine the documents into a single EPUB file (needs pandoc)
+  pdf      combine the documents into a single PDF file (needs pandoc)
 
 Common options:
-  --dry-run         convert and report, but make no API calls
+  --dry-run         convert and report, but write nothing
+  --export TARGET   reader | epub | pdf  (default: reader)
+  --output PATH     output file for epub / pdf export
   --save-html       also write the converted .html next to each source file
   --title  TEXT     metadata overrides (single-file / DIR mode)
   --author TEXT
@@ -25,15 +31,22 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from readwise_reader_import import __version__
 
-API_URL = "https://readwise.io/api/v3/save/"
+SAVE_URL = "https://readwise.io/api/v3/save/"
+UPDATE_URL = "https://readwise.io/api/v3/update/"
+MAX_RETRIES = 4
+
+# Scalar metadata fields the Reader update endpoint can refresh.
+UPDATABLE_FIELDS = ("title", "author", "summary", "image_url", "location", "category")
 
 
 def load_token(cli_token):
@@ -109,12 +122,63 @@ def md_to_html(md_body):
         )
 
 
+def _request(url, payload, token, method):
+    """Build a JSON request for the Readwise Reader API."""
+    return urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Token {token}",
+            "Content-Type": "application/json",
+        },
+        method=method,
+    )
+
+
+def _send(req):
+    """Send an API request, retrying on HTTP 429 with backoff.
+
+    Returns (status_code, response_body_text).
+    """
+    for attempt in range(MAX_RETRIES):
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < MAX_RETRIES - 1:
+                wait = int(exc.headers.get("Retry-After") or 2**attempt)
+                print(f"  [INFO]    rate limited; retrying in {wait}s")
+                time.sleep(wait)
+                continue
+            raise
+    raise RuntimeError("retry loop exhausted")
+
+
+def _update(token, doc_id, meta):
+    """Refresh an existing Reader document's metadata via the update endpoint."""
+    fields = {k: meta[k] for k in UPDATABLE_FIELDS if meta.get(k)}
+    if meta.get("tags"):
+        fields["tags"] = meta["tags"]
+    if not fields:
+        return
+    try:
+        _send(_request(f"{UPDATE_URL}{doc_id}/", fields, token, "PATCH"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8")
+        print(f"  [ERROR]   update failed: {exc.code} {detail}")
+
+
 def push(token, meta, html, dry_run):
-    """Send one document to the Readwise Reader save endpoint."""
+    """Push one document to Readwise Reader, refreshing it if it already exists."""
+    title = meta["title"]
+    if dry_run:
+        print(f"  [DRY-RUN] {title}  ({len(html):,} chars HTML)")
+        return True
+
     payload = {
         "url": meta["url"],
         "html": html,
-        "title": meta["title"],
+        "title": title,
         "should_clean_html": False,
         "saved_using": "readwise-reader-import",
     }
@@ -124,29 +188,22 @@ def push(token, meta, html, dry_run):
     if meta.get("tags"):
         payload["tags"] = meta["tags"]
 
-    if dry_run:
-        print(f"  [DRY-RUN] {meta['title']}  ({len(html):,} chars HTML)")
-        return True
-
-    req = urllib.request.Request(
-        API_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Token {token}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-        print(f"  [SUCCESS] {meta['title']}")
-        print(f"            {body.get('url', '')}")
-        return True
+        status, body_text = _send(_request(SAVE_URL, payload, token, "POST"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8")
-        print(f"  [ERROR]   {meta['title']}: {exc.code} {detail}")
+        print(f"  [ERROR]   {title}: {exc.code} {exc.read().decode('utf-8')}")
         return False
+
+    doc = json.loads(body_text)
+    if status == 200:
+        # The document already existed; the save endpoint does not refresh
+        # metadata, so update it explicitly.
+        _update(token, doc["id"], meta)
+        print(f"  [SUCCESS] updated  {title}")
+    else:
+        print(f"  [SUCCESS] created  {title}")
+    print(f"            {doc.get('url', '')}")
+    return True
 
 
 def resolve_meta(path, overrides):
@@ -194,6 +251,70 @@ def collect_documents(target, overrides):
     return [(p, overrides) for p in sorted(target.glob("*.md"))]
 
 
+def default_output(target, fmt):
+    """Derive a default epub / pdf output filename from the import target."""
+    stem = target.stem if target.is_file() else target.name
+    return Path(f"{stem}.{fmt}")
+
+
+def export_reader(documents, token, dry_run, save_html):
+    """Convert and push every document to Readwise Reader."""
+    pushed = 0
+    for path, overrides in documents:
+        if not path.exists():
+            print(f"  [SKIP]    {path} not found")
+            continue
+        meta, body = resolve_meta(path, overrides)
+        html = md_to_html(body)
+        if save_html:
+            path.with_suffix(".html").write_text(html, encoding="utf-8")
+        if push(token, meta, html, dry_run):
+            pushed += 1
+    verb = "converted" if dry_run else "imported"
+    print(f"\n{verb}: {pushed}/{len(documents)} document(s).")
+    return pushed == len(documents)
+
+
+def export_file(documents, output, fmt, dry_run):
+    """Combine documents into a single EPUB or PDF file via pandoc."""
+    parts, title, author = [], None, None
+    for path, overrides in documents:
+        if not path.exists():
+            print(f"  [SKIP]    {path} not found")
+            continue
+        front, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+        meta = {**front, **{k: v for k, v in overrides.items() if v}}
+        title = title or meta.get("title") or infer_title(body, path)
+        author = author or meta.get("author")
+        parts.append(body)
+
+    if not parts:
+        sys.exit("No documents to export.")
+    if dry_run:
+        print(f"  [DRY-RUN] would write {output} from {len(parts)} document(s)")
+        return True
+    if shutil.which("pandoc") is None:
+        sys.exit(f"{fmt.upper()} export needs pandoc — install it: brew install pandoc")
+
+    cmd = ["pandoc", "-f", "gfm", "-o", str(output)]
+    if title:
+        cmd += ["--metadata", f"title={title}"]
+    if author:
+        cmd += ["--metadata", f"author={author}"]
+    try:
+        subprocess.run(
+            cmd,
+            input="\n\n".join(parts),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        sys.exit(f"{fmt.upper()} export failed: {exc.stderr.strip()}")
+    print(f"  [SUCCESS] wrote {output} from {len(parts)} document(s)")
+    return True
+
+
 def build_parser():
     """Construct the argparse command-line parser."""
     parser = argparse.ArgumentParser(
@@ -201,6 +322,13 @@ def build_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("target", help="a job dir, a directory of .md, or one .md file")
+    parser.add_argument(
+        "--export",
+        choices=["reader", "epub", "pdf"],
+        default="reader",
+        help="export target (default: reader)",
+    )
+    parser.add_argument("--output", help="output file for epub / pdf export")
     parser.add_argument("--token")
     parser.add_argument("--title")
     parser.add_argument("--author")
@@ -218,19 +346,12 @@ def build_parser():
 
 
 def main():
-    """Convert markdown documents and push them to Readwise Reader."""
+    """Convert markdown documents and import or export them."""
     args = build_parser().parse_args()
 
     target = Path(args.target)
     if not target.exists():
         sys.exit(f"Not found: {target}")
-
-    token = None if args.dry_run else load_token(args.token)
-    if not args.dry_run and not token:
-        sys.exit(
-            "No Readwise token. Pass --token, set READWISE_TOKEN, or add it "
-            "to a .env file.\nGet one at https://readwise.io/access_token"
-        )
 
     overrides = {
         "title": args.title,
@@ -241,26 +362,25 @@ def main():
         "category": args.category,
         "location": args.location,
     }
-
     documents = collect_documents(target, overrides)
     if not documents:
         sys.exit(f"No markdown documents found under {target}")
 
-    ok = 0
-    for path, doc_overrides in documents:
-        if not path.exists():
-            print(f"  [SKIP]    {path} not found")
-            continue
-        meta, body = resolve_meta(path, doc_overrides)
-        html = md_to_html(body)
-        if args.save_html:
-            path.with_suffix(".html").write_text(html, encoding="utf-8")
-        if push(token, meta, html, args.dry_run):
-            ok += 1
+    if args.export == "reader":
+        token = None if args.dry_run else load_token(args.token)
+        if not args.dry_run and not token:
+            sys.exit(
+                "No Readwise token. Pass --token, set READWISE_TOKEN, or add "
+                "it to a .env file.\nGet one at https://readwise.io/access_token"
+            )
+        success = export_reader(documents, token, args.dry_run, args.save_html)
+    else:
+        output = (
+            Path(args.output) if args.output else default_output(target, args.export)
+        )
+        success = export_file(documents, output, args.export, args.dry_run)
 
-    verb = "converted" if args.dry_run else "imported"
-    print(f"\n{verb}: {ok}/{len(documents)} document(s).")
-    if ok < len(documents):
+    if not success:
         sys.exit(1)
 
 
