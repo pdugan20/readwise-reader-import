@@ -1,9 +1,8 @@
 # Secrets
 .env
 
-# Third-party job content and generated output (not ours to commit)
-jobs/**/*.md
-jobs/**/*.html
+# Personal import jobs — user workspace, not part of the tool
+jobs/
 
 # Python
 __pycache__/
