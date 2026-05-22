@@ -151,7 +151,7 @@ def _send(req):
                 time.sleep(wait)
                 continue
             raise
-    raise RuntimeError("retry loop exhausted")
+    raise RuntimeError("retry loop exhausted")  # pragma: no cover
 
 
 def _update(token, doc_id, meta):

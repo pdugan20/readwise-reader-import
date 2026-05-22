@@ -1,6 +1,7 @@
 # readwise-reader-import
 
 [![CI](https://github.com/pdugan20/readwise-reader-import/actions/workflows/ci.yml/badge.svg)](https://github.com/pdugan20/readwise-reader-import/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/pdugan20/readwise-reader-import/branch/main/graph/badge.svg)](https://codecov.io/gh/pdugan20/readwise-reader-import)
 [![Release](https://img.shields.io/github/v/release/pdugan20/readwise-reader-import?logo=github)](https://github.com/pdugan20/readwise-reader-import/releases)
 [![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?logo=opensourceinitiative&logoColor=white)](https://opensource.org/licenses/MIT)
