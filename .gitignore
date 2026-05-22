@@ -1,0 +1,24 @@
+# Secrets
+.env
+
+# Third-party job content and generated output (not ours to commit)
+jobs/**/*.md
+jobs/**/*.html
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+
+# Tooling
+node_modules/
+.claudelint-cache/

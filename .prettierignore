@@ -1,0 +1,9 @@
+CHANGELOG.md
+jobs/**/*.md
+jobs/**/*.html
+node_modules/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/

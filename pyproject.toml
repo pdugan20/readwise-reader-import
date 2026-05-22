@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "readwise-reader-import"
+dynamic = ["version"]
+description = "Convert markdown into clean, highlightable Readwise Reader articles"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "Pat Dugan" }]
+keywords = ["readwise", "reader", "markdown", "read-it-later", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/pdugan20/readwise-reader-import"
+Repository = "https://github.com/pdugan20/readwise-reader-import"
+Issues = "https://github.com/pdugan20/readwise-reader-import/issues"
+Changelog = "https://github.com/pdugan20/readwise-reader-import/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.9",
+    "pre-commit>=3.0",
+    "build>=1.0",
+    "markdown>=3.0",
+]
+
+[project.scripts]
+reader-import = "readwise_reader_import.importer:main"
+
+[tool.hatch.version]
+path = "readwise_reader_import/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["readwise_reader_import"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=readwise_reader_import --cov-report=term-missing"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["readwise_reader_import"]
