@@ -5,6 +5,7 @@
       "release-type": "python",
       "package-name": "readwise-reader-import",
       "include-component-in-tag": false,
+      "exclude-paths": ["README.md"],
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         {
