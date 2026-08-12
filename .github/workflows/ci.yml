@@ -36,6 +36,7 @@ jobs:
           globs: |
             **/*.md
             !CHANGELOG.md
+            !CLAUDE.md
             !jobs
 
   prettier:
