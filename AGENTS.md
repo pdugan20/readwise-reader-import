@@ -1,0 +1,44 @@
+# readwise-reader-import
+
+Guidance for Claude Code when working in this repository.
+
+## Overview
+
+`readwise-reader-import` is a zero-dependency Python CLI that converts markdown
+into clean HTML and pushes it to the Readwise Reader API as individual
+articles. The command is `reader-import`.
+
+## Code Review Rules
+
+- Flag Readwise tokens or imported private document content in logs, fixtures, errors,
+  generated examples, command output, or source control.
+- Flag code that sends content during `--dry-run`, updates the wrong Reader item after URL
+  de-duplication, or retries a non-idempotent operation without a safe identity boundary.
+- Flag source/output path handling that writes outside the requested destination, follows
+  an unsafe manifest path, or invokes an optional converter through a shell command.
+
+## Structure
+
+- `readwise_reader_import/importer.py` — all CLI logic (arg parsing,
+  markdown conversion, metadata resolution, Reader API calls)
+- `readwise_reader_import/__init__.py` — holds `__version__`
+- `tests/` — pytest unit tests
+- `jobs/` — example import jobs; each is a folder with a `manifest.json`
+  plus markdown files (the markdown is gitignored as third-party content)
+
+## Conventions
+
+- Runtime code stays standard-library only. `markdown` and `pandoc` are
+  optional converters, not runtime dependencies.
+- Lint and format with Ruff: `make lint` / `make format`.
+- Tests run with `make test`.
+- Commits follow Conventional Commits — see [CONTRIBUTING.md](CONTRIBUTING.md).
+- The version is owned by release-please. Never edit `__version__` or
+  `.release-please-manifest.json` by hand; see [docs/releasing.md](docs/releasing.md).
+
+## Reader API notes
+
+- The save endpoint de-duplicates on `url`. When the URL already exists, the
+  importer follows up with the update endpoint (`PATCH /update/<id>/`) to
+  refresh metadata. Article HTML content itself is not re-updated.
+- API calls retry on HTTP 429 using the `Retry-After` header.
