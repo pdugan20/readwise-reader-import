@@ -1,10 +1,9 @@
 # readwise-reader-import
 
-[![CI](https://github.com/pdugan20/readwise-reader-import/actions/workflows/ci.yml/badge.svg)](https://github.com/pdugan20/readwise-reader-import/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/pdugan20/readwise-reader-import/graph/badge.svg?token=TMRZFIrp1E)](https://codecov.io/gh/pdugan20/readwise-reader-import)
-[![Release](https://img.shields.io/github/v/release/pdugan20/readwise-reader-import?logo=github)](https://github.com/pdugan20/readwise-reader-import/releases)
-[![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?logo=opensourceinitiative&logoColor=white)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/pdugan20/readwise-reader-import/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/pdugan20/readwise-reader-import/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/pdugan20/readwise-reader-import/graph/badge.svg?token=TMRZFIrp1E)](https://codecov.io/gh/pdugan20/readwise-reader-import)
+[![Release](https://img.shields.io/github/v/release/pdugan20/readwise-reader-import)](https://github.com/pdugan20/readwise-reader-import/releases/latest)
+[![License](https://img.shields.io/github/license/pdugan20/readwise-reader-import)](LICENSE)
 
 Turn markdown into clean, individually highlightable articles in Readwise Reader — or export it as EPUB or PDF. Built for long-form content where Reader's own parser struggles with cluttered source pages: multi-chapter reports, gated markdown exports, anything you would rather hand-clean than scrape.
 
