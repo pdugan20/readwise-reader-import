@@ -1,6 +1,6 @@
-# CLAUDE.md
+# readwise-reader-import agent guide
 
-Guidance for Claude Code when working in this repository.
+Guidance for coding agents working in this repository. Claude Code and Codex both read this file.
 
 ## Overview
 
