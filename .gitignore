@@ -20,4 +20,3 @@ htmlcov/
 
 # Tooling
 node_modules/
-.claudelint-cache/
