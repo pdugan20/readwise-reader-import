@@ -77,3 +77,24 @@ PDF export needs a pandoc PDF engine installed.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, testing, commit
 conventions, and how releases work.
+
+## Input and request safeguards
+
+Manifest document names must be relative to the selected job directory. Absolute paths,
+parent traversal that leaves the directory, and symlinks whose source or parent resolves outside it are rejected
+before any import begins. Nested paths and symlinks contained within the job are supported;
+missing files retain the existing skip behavior. A directly selected file is an explicit
+input and may be anywhere the local user can read. Keep job directories owner-controlled
+and unchanged during a run; path checks do not isolate a concurrently hostile local actor.
+
+Reader requests have a 30-second socket-operation timeout, a 1 MiB response cap, and at
+most four attempts for HTTP 429. Each Retry-After delay is capped at 60 seconds; malformed
+values use bounded exponential backoff and HTTP dates are supported. These are I/O and
+retry bounds, not a whole-job wall-clock deadline. Redirects are refused so credentials
+cannot follow a provider redirect, and provider response bodies/protocol errors are not printed on failure. Save/update response status, shape, and document identity are validated; a failed metadata update is not reported as success.
+
+`--dry-run --save-html` writes no HTML and makes no Reader requests. Normal adjacent HTML
+exports use a temporary file and atomic replacement, so failures preserve the previous
+output and an existing symlink is replaced rather than written through. New temporary
+HTML output starts private to the owner. API mutation and output identity behavior is
+otherwise unchanged. Tests use synthetic documents and mocked or owned-loopback APIs.
