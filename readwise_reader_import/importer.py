@@ -27,16 +27,20 @@ Metadata precedence: CLI flags / manifest entry > YAML frontmatter > inferred.
 """
 
 import argparse
+import email.utils
 import hashlib
+import http.client
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC
 from pathlib import Path
 
 from readwise_reader_import import __version__
@@ -44,6 +48,17 @@ from readwise_reader_import import __version__
 SAVE_URL = "https://readwise.io/api/v3/save/"
 UPDATE_URL = "https://readwise.io/api/v3/update/"
 MAX_RETRIES = 4
+REQUEST_TIMEOUT_SECONDS = 30
+MAX_RETRY_WAIT_SECONDS = 60
+MAX_API_RESPONSE_BYTES = 1024 * 1024
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_API_OPENER = urllib.request.build_opener(_NoRedirect())
 
 # Scalar metadata fields the Reader update endpoint can refresh.
 UPDATABLE_FIELDS = ("title", "author", "summary", "image_url", "location", "category")
@@ -135,18 +150,39 @@ def _request(url, payload, token, method):
     )
 
 
-def _send(req):
-    """Send an API request, retrying on HTTP 429 with backoff.
+def _retry_wait(value, attempt):
+    """Bound an untrusted Retry-After delta/date; malformed values use backoff."""
+    fallback = 2**attempt
+    if value is None:
+        return min(fallback, MAX_RETRY_WAIT_SECONDS)
+    try:
+        wait = int(value)
+        if wait < 0:
+            return min(fallback, MAX_RETRY_WAIT_SECONDS)
+    except (ValueError, TypeError):
+        try:
+            date = email.utils.parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=UTC)
+            wait = max(0, date.timestamp() - time.time())
+        except (ValueError, TypeError, OverflowError):
+            wait = fallback
+    return min(wait, MAX_RETRY_WAIT_SECONDS)
 
-    Returns (status_code, response_body_text).
-    """
+
+def _send(req):
+    """Send with finite socket waits/response size and bounded 429 retries."""
     for attempt in range(MAX_RETRIES):
         try:
-            with urllib.request.urlopen(req) as resp:
-                return resp.status, resp.read().decode("utf-8")
+            with _API_OPENER.open(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+                body = resp.read(MAX_API_RESPONSE_BYTES + 1)
+                if len(body) > MAX_API_RESPONSE_BYTES:
+                    raise ValueError("Reader API response exceeds size limit")
+                return resp.status, body.decode("utf-8")
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and attempt < MAX_RETRIES - 1:
-                wait = int(exc.headers.get("Retry-After") or 2**attempt)
+                wait = _retry_wait((exc.headers or {}).get("Retry-After"), attempt)
+                exc.close()
                 print(f"  [INFO]    rate limited; retrying in {wait}s")
                 time.sleep(wait)
                 continue
@@ -154,18 +190,39 @@ def _send(req):
     raise RuntimeError("retry loop exhausted")  # pragma: no cover
 
 
+def _document_response(status, body, statuses):
+    if status not in statuses:
+        raise ValueError("Unexpected Reader status")
+    doc = json.loads(body)
+    if not isinstance(doc, dict):
+        raise ValueError("Invalid Reader document response")
+    doc_id = doc.get("id")
+    if not isinstance(doc_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", doc_id):
+        raise ValueError("Invalid Reader document ID")
+    if "url" in doc and not isinstance(doc["url"], str):
+        raise ValueError("Invalid Reader document URL")
+    return doc
+
+
 def _update(token, doc_id, meta):
-    """Refresh an existing Reader document's metadata via the update endpoint."""
+    """Refresh metadata, returning False without exposing protocol/provider errors."""
     fields = {k: meta[k] for k in UPDATABLE_FIELDS if meta.get(k)}
     if meta.get("tags"):
         fields["tags"] = meta["tags"]
     if not fields:
-        return
+        return True
     try:
-        _send(_request(f"{UPDATE_URL}{doc_id}/", fields, token, "PATCH"))
+        status, body = _send(_request(f"{UPDATE_URL}{doc_id}/", fields, token, "PATCH"))
+        doc = _document_response(status, body, (200,))
+        if doc["id"] != doc_id:
+            raise ValueError("Reader update identity mismatch")
+        return True
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8")
-        print(f"  [ERROR]   update failed: {exc.code} {detail}")
+        print(f"  [ERROR]   update failed: HTTP {exc.code}")
+        exc.close()
+    except (OSError, ValueError, http.client.HTTPException):
+        print("  [ERROR]   update request failed")
+    return False
 
 
 def push(token, meta, html, dry_run):
@@ -190,15 +247,20 @@ def push(token, meta, html, dry_run):
 
     try:
         status, body_text = _send(_request(SAVE_URL, payload, token, "POST"))
+        doc = _document_response(status, body_text, (200, 201))
     except urllib.error.HTTPError as exc:
-        print(f"  [ERROR]   {title}: {exc.code} {exc.read().decode('utf-8')}")
+        print(f"  [ERROR]   {title}: HTTP {exc.code}")
+        exc.close()
+        return False
+    except (OSError, ValueError, http.client.HTTPException):
+        print(f"  [ERROR]   {title}: request failed")
         return False
 
-    doc = json.loads(body_text)
     if status == 200:
         # The document already existed; the save endpoint does not refresh
         # metadata, so update it explicitly.
-        _update(token, doc["id"], meta)
+        if not _update(token, doc["id"], meta):
+            return False
         print(f"  [SUCCESS] updated  {title}")
     else:
         print(f"  [SUCCESS] created  {title}")
@@ -228,18 +290,46 @@ def resolve_meta(path, overrides):
     return meta, body
 
 
+def _job_document(root, name):
+    """Resolve implicit job inputs without following a path outside the job root."""
+    if not isinstance(name, str) or not name or Path(name).is_absolute():
+        raise ValueError("Job document paths must be nonempty relative filenames")
+    path = root / name
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("Cannot resolve job document safely") from exc
+    if (
+        not resolved.is_relative_to(root)
+        or not path.parent.resolve().is_relative_to(root)
+        or resolved.is_dir()
+    ):
+        raise ValueError("Job documents must stay within the selected job directory")
+    return path
+
+
 def collect_documents(target, overrides):
-    """Yield (path, overrides) pairs for every document to import."""
+    """Collect an explicit file, or files contained by a selected job directory."""
     if target.is_file():
         return [(target, overrides)]
 
-    manifest = target / "manifest.json"
-    if manifest.exists():
+    root = target.resolve()
+    manifest = root / "manifest.json"
+    if manifest.exists() or manifest.is_symlink():
+        if not manifest.resolve().is_relative_to(root):
+            raise ValueError("Manifest must stay within the selected job directory")
         spec = json.loads(manifest.read_text(encoding="utf-8"))
+        if not isinstance(spec, dict):
+            raise ValueError("Manifest must be an object")
         defaults = spec.get("defaults", {})
+        entries = spec.get("documents", [])
+        if not isinstance(defaults, dict) or not isinstance(entries, list):
+            raise ValueError("Manifest defaults/documents have invalid types")
         docs = []
-        for entry in spec.get("documents", []):
-            path = target / entry["file"]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("Manifest documents must be objects")
+            path = _job_document(root, entry.get("file"))
             merged = {
                 **defaults,
                 **{k: v for k, v in entry.items() if k != "file"},
@@ -248,13 +338,30 @@ def collect_documents(target, overrides):
             docs.append((path, merged))
         return docs
 
-    return [(p, overrides) for p in sorted(target.glob("*.md"))]
+    return [(_job_document(root, p.name), overrides) for p in sorted(root.glob("*.md"))]
 
 
 def default_output(target, fmt):
     """Derive a default epub / pdf output filename from the import target."""
     stem = target.stem if target.is_file() else target.name
     return Path(f"{stem}.{fmt}")
+
+
+def _write_html(destination, html):
+    """Replace the adjacent HTML atomically, never writing through its symlink."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=destination.parent, delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(html)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def export_reader(documents, token, dry_run, save_html):
@@ -266,8 +373,8 @@ def export_reader(documents, token, dry_run, save_html):
             continue
         meta, body = resolve_meta(path, overrides)
         html = md_to_html(body)
-        if save_html:
-            path.with_suffix(".html").write_text(html, encoding="utf-8")
+        if save_html and not dry_run:
+            _write_html(path.with_suffix(".html"), html)
         if push(token, meta, html, dry_run):
             pushed += 1
     verb = "converted" if dry_run else "imported"
@@ -362,7 +469,12 @@ def main():
         "category": args.category,
         "location": args.location,
     }
-    documents = collect_documents(target, overrides)
+    try:
+        documents = collect_documents(target, overrides)
+    except (ValueError, OSError, RuntimeError):
+        sys.exit(
+            "Invalid job input: use a valid manifest and paths within the job directory"
+        )
     if not documents:
         sys.exit(f"No markdown documents found under {target}")
 

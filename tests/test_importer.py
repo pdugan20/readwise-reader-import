@@ -169,7 +169,7 @@ def test_update_selects_only_updatable_fields(monkeypatch):
         return object()
 
     monkeypatch.setattr(importer, "_request", fake_request)
-    monkeypatch.setattr(importer, "_send", lambda req: (200, "{}"))
+    monkeypatch.setattr(importer, "_send", lambda req: (200, '{"id":"doc123"}'))
     meta = {
         "title": "T",
         "summary": "S",
@@ -192,8 +192,9 @@ class _FakeResponse:
     def __init__(self, body):
         self._body = body
 
-    def read(self):
-        return self._body.encode("utf-8")
+    def read(self, size=-1):
+        body = self._body.encode("utf-8")
+        return body if size < 0 else body[:size]
 
     def __enter__(self):
         return self
@@ -205,7 +206,8 @@ class _FakeResponse:
 def test_send_retries_on_429(monkeypatch):
     calls = []
 
-    def fake_urlopen(req):
+    def fake_urlopen(req, timeout):
+        assert timeout == importer.REQUEST_TIMEOUT_SECONDS
         calls.append(req)
         if len(calls) == 1:
             raise urllib.error.HTTPError(
@@ -217,7 +219,7 @@ def test_send_retries_on_429(monkeypatch):
             )
         return _FakeResponse('{"ok": true}')
 
-    monkeypatch.setattr(importer.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(importer._API_OPENER, "open", fake_urlopen)
     monkeypatch.setattr(importer.time, "sleep", lambda _: None)
     status, body = importer._send(object())
     assert status == 200
