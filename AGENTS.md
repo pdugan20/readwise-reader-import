@@ -33,3 +33,12 @@ articles. The command is `reader-import`.
   importer follows up with the update endpoint (`PATCH /update/<id>/`) to
   refresh metadata. Article HTML content itself is not re-updated.
 - API calls retry on HTTP 429 using the `Retry-After` header.
+
+## Code Review Rules
+
+- Flag Readwise tokens or imported private document content in logs, fixtures, errors,
+  generated examples, command output, or source control.
+- Flag code that sends content during `--dry-run`, updates the wrong Reader item after URL
+  de-duplication, or retries a non-idempotent operation without a safe identity boundary.
+- Flag source/output path handling that writes outside the requested destination, follows
+  an unsafe manifest path, or invokes an optional converter through a shell command.
