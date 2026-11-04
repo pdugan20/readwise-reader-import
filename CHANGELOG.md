@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/pdugan20/readwise-reader-import/compare/v0.1.0...v0.1.1) (2026-11-04)
+
+
+### Bug Fixes
+
+* bound Reader requests and job filesystem access ([#16](https://github.com/pdugan20/readwise-reader-import/issues/16)) ([7735153](https://github.com/pdugan20/readwise-reader-import/commit/77351535c6ec620ccb94eec862e879bbfae8e864))
+
 ## 0.1.0 (2026-05-22)
 
 
